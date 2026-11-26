@@ -1,6 +1,6 @@
 [package]
 name = "beta1-common"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.100"
 license = "AGPL-3.0-or-later"
@@ -11,6 +11,10 @@ build = "build.rs"
 
 # Versions exactes, publiées depuis au moins deux semaines.
 [dependencies]
+# Empreinte des tiles.
+blake3 = "=1.8.7"
+# Décompression zstd en Rust pur : le client est en WebAssembly.
+ruzstd = "=0.9.1"
 
 [build-dependencies]
 blake3 = "=1.8.7"

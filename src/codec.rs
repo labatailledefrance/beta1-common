@@ -51,6 +51,10 @@ impl Writer {
         }
         self.buf.push(v as u8);
     }
+    /// Entier signé en varint zigzag (0, -1, 1, -2… → 0, 1, 2, 3…).
+    pub fn svarint(&mut self, v: i64) {
+        self.varint(((v << 1) ^ (v >> 63)) as u64);
+    }
     /// Octets bruts, de longueur fixe connue du `Reader`.
     pub fn bytes(&mut self, b: &[u8]) {
         self.buf.extend_from_slice(b);
@@ -159,6 +163,11 @@ impl<'a> Reader<'a> {
             shift += 7;
         }
     }
+    /// Entier signé en varint zigzag.
+    pub fn svarint(&mut self) -> Result<i64> {
+        let z = self.varint()?;
+        Ok(((z >> 1) as i64) ^ -((z & 1) as i64))
+    }
     /// Nombre d'éléments annoncé : jamais plus que d'octets restants, pour
     /// qu'un message court ne fasse pas allouer une grande table.
     pub fn count(&mut self) -> Result<usize> {
@@ -168,6 +177,18 @@ impl<'a> Reader<'a> {
     /// Octets bruts de longueur fixe.
     pub fn bytes<const N: usize>(&mut self) -> Result<[u8; N]> {
         self.take()
+    }
+    /// Les `n` octets suivants, sans copie.
+    pub fn slice(&mut self, n: usize) -> Result<&'a [u8]> {
+        let s = self.buf.get(self.pos..self.pos.checked_add(n).ok_or(Invalid)?).ok_or(Invalid)?;
+        self.pos += n;
+        Ok(s)
+    }
+    /// Tous les octets restants.
+    pub fn rest(&mut self) -> &'a [u8] {
+        let s = &self.buf[self.pos..];
+        self.pos = self.buf.len();
+        s
     }
     /// Chaîne UTF-8 valide.
     pub fn string(&mut self) -> Result<String> {
