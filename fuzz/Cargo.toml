@@ -1,0 +1,24 @@
+# Fuzzing des décodeurs (cargo fuzz, chaîne nightly). Espace de travail séparé :
+# libfuzzer-sys ne compile qu'en nightly et contient du code unsafe.
+[package]
+name = "beta1-common-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "=0.4.13"
+beta1-common = { path = ".." }
+
+[workspace]
+
+[[bin]]
+name = "decodeurs"
+path = "fuzz_targets/decodeurs.rs"
+test = false
+doc = false
+bench = false

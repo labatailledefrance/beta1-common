@@ -1,0 +1,26 @@
+[package]
+name = "beta1-common"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+license = "AGPL-3.0-or-later"
+description = "La Bataille de France, beta 1 : géographie, format des tiles et protocole partagés par le serveur, le client et la chaîne de données."
+repository = "https://github.com/labatailledefrance/beta1-common"
+publish = false
+build = "build.rs"
+
+# Versions exactes, publiées depuis au moins deux semaines.
+[dependencies]
+
+[build-dependencies]
+blake3 = "=1.8.7"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+dbg_macro = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

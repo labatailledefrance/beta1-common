@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  schedule:
+    # Fuzzing long, chaque nuit.
+    - cron: "17 2 * * *"
+
+permissions: {}
+
+jobs:
+  rust:
+    if: github.event_name != 'schedule'
+    uses: labatailledefrance/.github/.github/workflows/rust.yml@0a24f4b86c7841dbc50463e0179c94ade20b49e2 # v1.0.0
+    permissions:
+      contents: read
+  securite:
+    if: github.event_name != 'schedule'
+    uses: labatailledefrance/.github/.github/workflows/securite.yml@0a24f4b86c7841dbc50463e0179c94ade20b49e2 # v1.0.0
+    permissions:
+      contents: read
+  dco:
+    if: github.event_name == 'pull_request'
+    uses: labatailledefrance/.github/.github/workflows/dco.yml@0a24f4b86c7841dbc50463e0179c94ade20b49e2 # v1.0.0
+    permissions:
+      contents: read
+
+  fuzz:
+    name: fuzzing des décodeurs
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      NIGHTLY: nightly-2026-11-01
+      # 60 s sur une PR ou un push, 30 min la nuit.
+      DUREE: ${{ github.event_name == 'schedule' && '1800' || '60' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Chaîne nightly et cargo-fuzz
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          cargo +"$NIGHTLY" install --locked cargo-fuzz@0.13.2
+      - name: Fuzzing
+        run: cargo +"$NIGHTLY" fuzz run decodeurs -- -max_total_time="$DUREE" -rss_limit_mb=2048
+      - name: Entrées qui font échouer le décodeur
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: artefacts-fuzz
+          path: fuzz/artifacts/
