@@ -5,13 +5,13 @@ Code partagé de la beta 1 de **La Bataille de France** : le serveur ([beta1-ser
 | Module | Contenu |
 |---|---|
 | `geo` | Positions : tile de 1 km (zone de projection, ix, iy) + position locale f32 centrée |
-| `codec` | Lecture et écriture binaires ; le décodeur ne panique jamais |
-| `protocole` | Messages client ↔ serveur et poignée de main |
-| `alea` | Aléatoire déterministe, indépendant de l'ordre et des threads |
+| `codec` | `Reader` et `Writer` binaires ; le `Reader` ne panique jamais |
+| `protocol` | Messages client ↔ serveur et handshake |
+| `rng` | Aléatoire déterministe, indépendant de l'ordre et des threads |
 
-## Empreinte du protocole
+## Fingerprint du protocole
 
-`build.rs` calcule l'empreinte BLAKE3 des sources du protocole (`codec.rs`, `geo.rs`, `protocole.rs`). Client et serveur la comparent à la connexion : toute modification du protocole impose de les livrer ensemble, ce qui est la règle (une mise à jour du serveur remet le monde à zéro).
+`build.rs` calcule le hash BLAKE3 des sources du protocole (`codec.rs`, `geo.rs`, `protocol.rs`). Client et serveur le comparent au handshake : toute modification du protocole impose de les livrer ensemble, ce qui est la règle (une mise à jour du serveur remet le monde à zéro).
 
 ## Développer
 
@@ -19,7 +19,7 @@ Code partagé de la beta 1 de **La Bataille de France** : le serveur ([beta1-ser
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo deny check
-cargo +nightly fuzz run decodeurs   # fuzzing (cargo install cargo-fuzz)
+cargo +nightly fuzz run decoders   # fuzzing (cargo install cargo-fuzz)
 ```
 
 Règles de contribution : [CONTRIBUTING.md](https://github.com/labatailledefrance/.github/blob/main/CONTRIBUTING.md). Licence : AGPL-3.0-or-later.

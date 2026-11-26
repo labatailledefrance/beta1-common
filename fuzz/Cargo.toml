@@ -17,8 +17,8 @@ beta1-common = { path = ".." }
 [workspace]
 
 [[bin]]
-name = "decodeurs"
-path = "fuzz_targets/decodeurs.rs"
+name = "decoders"
+path = "fuzz_targets/decoders.rs"
 test = false
 doc = false
 bench = false

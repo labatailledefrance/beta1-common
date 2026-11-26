@@ -36,7 +36,7 @@ jobs:
       contents: read
 
   fuzz:
-    name: fuzzing des décodeurs
+    name: fuzzing des decoders
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -53,7 +53,7 @@ jobs:
           rustup toolchain install "$NIGHTLY" --profile minimal
           cargo +"$NIGHTLY" install --locked cargo-fuzz@0.13.2
       - name: Fuzzing
-        run: cargo +"$NIGHTLY" fuzz run decodeurs -- -max_total_time="$DUREE" -rss_limit_mb=2048
+        run: cargo +"$NIGHTLY" fuzz run decoders -- -max_total_time="$DUREE" -rss_limit_mb=2048
       - name: Entrées qui font échouer le décodeur
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

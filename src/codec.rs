@@ -1,71 +1,75 @@
-//! Lecture et écriture binaires, petit-boutiennes, écrites à la main (repris de
+//! `Writer` et `Reader` binaires, little-endian, écrits à la main (repris de
 //! P-24 à P-26).
 //!
-//! Le décodeur lit des octets venus d'Internet : il ne panique jamais. Toute
+//! Le `Reader` lit des octets venus d'Internet : il ne panique jamais. Toute
 //! entrée invalide (tronquée, longueur annoncée plus grande que le reste,
-//! flottant non fini, entier variable trop long) rend [`Invalide`].
+//! flottant non fini, varint trop long) rend [`Invalid`].
 
 use crate::geo::{Pos, TileId};
 
-/// Écrivain : accumule les octets d'un message.
+/// Accumule les octets d'un message.
 #[derive(Default, Debug)]
-pub struct Ecr {
+pub struct Writer {
     /// Octets écrits.
-    pub b: Vec<u8>,
+    pub buf: Vec<u8>,
 }
 
-impl Ecr {
+impl Writer {
     /// Octet.
     pub fn u8(&mut self, v: u8) {
-        self.b.push(v);
+        self.buf.push(v);
     }
     /// Entier de 16 bits.
     pub fn u16(&mut self, v: u16) {
-        self.b.extend_from_slice(&v.to_le_bytes());
+        self.buf.extend_from_slice(&v.to_le_bytes());
     }
     /// Entier signé de 16 bits.
     pub fn i16(&mut self, v: i16) {
-        self.b.extend_from_slice(&v.to_le_bytes());
+        self.buf.extend_from_slice(&v.to_le_bytes());
     }
     /// Entier de 32 bits.
     pub fn u32(&mut self, v: u32) {
-        self.b.extend_from_slice(&v.to_le_bytes());
+        self.buf.extend_from_slice(&v.to_le_bytes());
+    }
+    /// Entier signé de 32 bits.
+    pub fn i32(&mut self, v: i32) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
     }
     /// Entier de 64 bits.
     pub fn u64(&mut self, v: u64) {
-        self.b.extend_from_slice(&v.to_le_bytes());
+        self.buf.extend_from_slice(&v.to_le_bytes());
     }
     /// Flottant de 32 bits.
     pub fn f32(&mut self, v: f32) {
-        self.b.extend_from_slice(&v.to_le_bytes());
+        self.buf.extend_from_slice(&v.to_le_bytes());
     }
-    /// Entier variable (LEB128).
-    pub fn v(&mut self, mut v: u64) {
+    /// Varint (LEB128).
+    pub fn varint(&mut self, mut v: u64) {
         while v >= 0x80 {
-            self.b.push(v as u8 | 0x80);
+            self.buf.push(v as u8 | 0x80);
             v >>= 7;
         }
-        self.b.push(v as u8);
+        self.buf.push(v as u8);
     }
-    /// Octets bruts, de longueur fixe connue du lecteur.
-    pub fn octets(&mut self, o: &[u8]) {
-        self.b.extend_from_slice(o);
+    /// Octets bruts, de longueur fixe connue du `Reader`.
+    pub fn bytes(&mut self, b: &[u8]) {
+        self.buf.extend_from_slice(b);
     }
-    /// Texte UTF-8, précédé de sa longueur.
-    pub fn txt(&mut self, s: &str) {
-        self.v(s.len() as u64);
-        self.b.extend_from_slice(s.as_bytes());
+    /// Chaîne UTF-8, précédée de sa longueur.
+    pub fn string(&mut self, s: &str) {
+        self.varint(s.len() as u64);
+        self.buf.extend_from_slice(s.as_bytes());
     }
     /// Tile (i32 × 2).
     pub fn tile(&mut self, t: TileId) {
-        self.b.extend_from_slice(&t.ix.to_le_bytes());
-        self.b.extend_from_slice(&t.iy.to_le_bytes());
+        self.i32(t.ix);
+        self.i32(t.iy);
     }
     /// Position : tile + locale au 1/64 m (i16 × 2).
     pub fn pos(&mut self, p: Pos) {
-        let p = p.norm();
-        self.tile(p.t);
-        for v in p.l {
+        let p = p.normalized();
+        self.tile(p.tile);
+        for v in p.local {
             self.i16((v * 64.0).round().clamp(-32_000.0, 31_999.0) as i16);
         }
     }
@@ -73,113 +77,113 @@ impl Ecr {
 
 /// Entrée invalide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Invalide;
+pub struct Invalid;
 
-impl std::fmt::Display for Invalide {
+impl std::fmt::Display for Invalid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("message invalide")
     }
 }
 
-impl std::error::Error for Invalide {}
+impl std::error::Error for Invalid {}
 
 /// Résultat d'une lecture.
-pub type R<T> = Result<T, Invalide>;
+pub type Result<T> = std::result::Result<T, Invalid>;
 
-/// Lecteur borné.
+/// Lecture bornée d'un message.
 #[derive(Debug)]
-pub struct Lec<'a> {
-    b: &'a [u8],
-    p: usize,
+pub struct Reader<'a> {
+    buf: &'a [u8],
+    pos: usize,
 }
 
-impl<'a> Lec<'a> {
-    /// Lecteur sur `b`.
-    pub fn new(b: &'a [u8]) -> Self {
-        Lec { b, p: 0 }
+impl<'a> Reader<'a> {
+    /// `Reader` sur `buf`.
+    pub fn new(buf: &'a [u8]) -> Self {
+        Reader { buf, pos: 0 }
     }
     /// Octets restants.
-    pub fn reste(&self) -> usize {
-        self.b.len() - self.p
+    pub fn remaining(&self) -> usize {
+        self.buf.len() - self.pos
     }
     /// Erreur s'il reste des octets : un message se lit en entier.
-    pub fn fin(&self) -> R<()> {
-        if self.reste() == 0 { Ok(()) } else { Err(Invalide) }
+    pub fn finish(&self) -> Result<()> {
+        if self.remaining() == 0 { Ok(()) } else { Err(Invalid) }
     }
-    fn prendre<const N: usize>(&mut self) -> R<[u8; N]> {
-        let s = self.b.get(self.p..self.p.checked_add(N).ok_or(Invalide)?).ok_or(Invalide)?;
-        self.p += N;
-        s.try_into().map_err(|_| Invalide)
+    fn take<const N: usize>(&mut self) -> Result<[u8; N]> {
+        let s = self.buf.get(self.pos..self.pos.checked_add(N).ok_or(Invalid)?).ok_or(Invalid)?;
+        self.pos += N;
+        s.try_into().map_err(|_| Invalid)
     }
     /// Octet.
-    pub fn u8(&mut self) -> R<u8> {
-        Ok(self.prendre::<1>()?[0])
+    pub fn u8(&mut self) -> Result<u8> {
+        Ok(self.take::<1>()?[0])
     }
     /// Entier de 16 bits.
-    pub fn u16(&mut self) -> R<u16> {
-        Ok(u16::from_le_bytes(self.prendre()?))
+    pub fn u16(&mut self) -> Result<u16> {
+        Ok(u16::from_le_bytes(self.take()?))
     }
     /// Entier signé de 16 bits.
-    pub fn i16(&mut self) -> R<i16> {
-        Ok(i16::from_le_bytes(self.prendre()?))
+    pub fn i16(&mut self) -> Result<i16> {
+        Ok(i16::from_le_bytes(self.take()?))
     }
     /// Entier de 32 bits.
-    pub fn u32(&mut self) -> R<u32> {
-        Ok(u32::from_le_bytes(self.prendre()?))
+    pub fn u32(&mut self) -> Result<u32> {
+        Ok(u32::from_le_bytes(self.take()?))
     }
     /// Entier signé de 32 bits.
-    pub fn i32(&mut self) -> R<i32> {
-        Ok(i32::from_le_bytes(self.prendre()?))
+    pub fn i32(&mut self) -> Result<i32> {
+        Ok(i32::from_le_bytes(self.take()?))
     }
     /// Entier de 64 bits.
-    pub fn u64(&mut self) -> R<u64> {
-        Ok(u64::from_le_bytes(self.prendre()?))
+    pub fn u64(&mut self) -> Result<u64> {
+        Ok(u64::from_le_bytes(self.take()?))
     }
     /// Flottant fini de 32 bits.
-    pub fn f32(&mut self) -> R<f32> {
-        let v = f32::from_le_bytes(self.prendre()?);
-        if v.is_finite() { Ok(v) } else { Err(Invalide) }
+    pub fn f32(&mut self) -> Result<f32> {
+        let v = f32::from_le_bytes(self.take()?);
+        if v.is_finite() { Ok(v) } else { Err(Invalid) }
     }
-    /// Entier variable (LEB128), 10 octets au plus.
-    pub fn v(&mut self) -> R<u64> {
-        let (mut v, mut s) = (0u64, 0u32);
+    /// Varint (LEB128), 10 octets au plus.
+    pub fn varint(&mut self) -> Result<u64> {
+        let (mut v, mut shift) = (0u64, 0u32);
         loop {
-            let o = self.u8()?;
-            if s > 63 || (s == 63 && o > 1) {
-                return Err(Invalide);
+            let b = self.u8()?;
+            if shift > 63 || (shift == 63 && b > 1) {
+                return Err(Invalid);
             }
-            v |= u64::from(o & 0x7F) << s;
-            if o & 0x80 == 0 {
+            v |= u64::from(b & 0x7F) << shift;
+            if b & 0x80 == 0 {
                 return Ok(v);
             }
-            s += 7;
+            shift += 7;
         }
     }
     /// Nombre d'éléments annoncé : jamais plus que d'octets restants, pour
     /// qu'un message court ne fasse pas allouer une grande table.
-    pub fn nb(&mut self) -> R<usize> {
-        let n = usize::try_from(self.v()?).map_err(|_| Invalide)?;
-        if n > self.reste() { Err(Invalide) } else { Ok(n) }
+    pub fn count(&mut self) -> Result<usize> {
+        let n = usize::try_from(self.varint()?).map_err(|_| Invalid)?;
+        if n > self.remaining() { Err(Invalid) } else { Ok(n) }
     }
     /// Octets bruts de longueur fixe.
-    pub fn octets<const N: usize>(&mut self) -> R<[u8; N]> {
-        self.prendre()
+    pub fn bytes<const N: usize>(&mut self) -> Result<[u8; N]> {
+        self.take()
     }
-    /// Texte UTF-8 valide.
-    pub fn txt(&mut self) -> R<String> {
-        let n = self.nb()?;
-        let s = self.b.get(self.p..self.p + n).ok_or(Invalide)?;
-        self.p += n;
-        String::from_utf8(s.to_vec()).map_err(|_| Invalide)
+    /// Chaîne UTF-8 valide.
+    pub fn string(&mut self) -> Result<String> {
+        let n = self.count()?;
+        let s = self.buf.get(self.pos..self.pos + n).ok_or(Invalid)?;
+        self.pos += n;
+        String::from_utf8(s.to_vec()).map_err(|_| Invalid)
     }
     /// Tile.
-    pub fn tile(&mut self) -> R<TileId> {
+    pub fn tile(&mut self) -> Result<TileId> {
         Ok(TileId { ix: self.i32()?, iy: self.i32()? })
     }
     /// Position.
-    pub fn pos(&mut self) -> R<Pos> {
-        let t = self.tile()?;
-        let l = [f32::from(self.i16()?) / 64.0, f32::from(self.i16()?) / 64.0];
-        Ok(Pos { t, l }.norm())
+    pub fn pos(&mut self) -> Result<Pos> {
+        let tile = self.tile()?;
+        let local = [f32::from(self.i16()?) / 64.0, f32::from(self.i16()?) / 64.0];
+        Ok(Pos { tile, local }.normalized())
     }
 }

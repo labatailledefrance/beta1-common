@@ -1,6 +1,7 @@
-//! Empreinte du protocole : BLAKE3 des sources qui définissent les messages.
-//! Toute modification du protocole change l'empreinte ; un client et un serveur
-//! d'empreintes différentes refusent de se parler (H-01 : même version partout).
+//! Fingerprint du protocole : hash BLAKE3 des sources qui définissent les
+//! messages. Toute modification du protocole change le fingerprint ; un client et
+//! un serveur de fingerprints différents refusent de se parler (H-01 : même
+//! version partout).
 
 // Un script de build qui échoue arrête la compilation : paniquer est le bon comportement.
 #![allow(clippy::panic)]
@@ -8,25 +9,25 @@
 use std::fs;
 use std::path::Path;
 
-const SOURCES: [&str; 3] = ["src/codec.rs", "src/geo.rs", "src/protocole.rs"];
+const SOURCES: [&str; 3] = ["src/codec.rs", "src/geo.rs", "src/protocol.rs"];
 
 fn main() {
-    let mut h = blake3::Hasher::new();
+    let mut hasher = blake3::Hasher::new();
     for s in SOURCES {
         println!("cargo::rerun-if-changed={s}");
-        let octets = fs::read(s).unwrap_or_else(|e| panic!("{s} : {e}"));
-        h.update(s.as_bytes());
-        h.update(&(octets.len() as u64).to_le_bytes());
-        h.update(&octets);
+        let bytes = fs::read(s).unwrap_or_else(|e| panic!("{s} : {e}"));
+        hasher.update(s.as_bytes());
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(&bytes);
     }
-    let e = h.finalize();
-    let sortie = Path::new(&std::env::var("OUT_DIR").unwrap_or_else(|e| panic!("OUT_DIR : {e}"))).join("empreinte.rs");
+    let hash = hasher.finalize();
+    let out = Path::new(&std::env::var("OUT_DIR").unwrap_or_else(|e| panic!("OUT_DIR : {e}"))).join("fingerprint.rs");
     fs::write(
-        sortie,
+        out,
         format!(
-            "/// Empreinte BLAKE3 du protocole (calculée par build.rs).\npub const EMPREINTE: [u8; 32] = {:?};\n",
-            e.as_bytes()
+            "/// Fingerprint BLAKE3 du protocole (calculé par build.rs).\npub const FINGERPRINT: [u8; 32] = {:?};\n",
+            hash.as_bytes()
         ),
     )
-    .unwrap_or_else(|e| panic!("empreinte.rs : {e}"));
+    .unwrap_or_else(|e| panic!("fingerprint.rs : {e}"));
 }
