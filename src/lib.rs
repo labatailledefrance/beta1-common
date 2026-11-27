@@ -6,10 +6,12 @@
 //!   fait jamais paniquer le décodeur, elle rend une erreur ;
 //! - [`protocol`] : messages entre le client et le serveur, handshake ;
 //! - [`rng`] : aléatoire déterministe, indépendant de l'ordre et des threads ;
-//! - [`tile`] : format des tiles produites par la chaîne de données.
+//! - [`tile`] : format des tiles produites par la chaîne de données ;
+//! - [`graph`] : graphe routier national, ordre CCH compris (chaîne → serveur).
 
 pub mod codec;
 pub mod geo;
+pub mod graph;
 pub mod protocol;
 pub mod rng;
 pub mod tile;
