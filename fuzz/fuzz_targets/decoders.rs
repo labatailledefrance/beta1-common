@@ -4,6 +4,7 @@
 #![no_main]
 
 use beta1_common::graph::RoadGraph;
+use beta1_common::index::NationalIndex;
 use beta1_common::protocol::{ClientMessage, ServerMessage};
 use beta1_common::tile::{self, SectionId, relief, sections};
 use libfuzzer_sys::fuzz_target;
@@ -22,6 +23,11 @@ fuzz_target!(|b: &[u8]| {
         }
     }
     let _ = tile::decode_pack_index(b);
+    let _ = tile::decode_header(b);
+    // Index national : une seule écriture.
+    if let Ok(x) = NationalIndex::decode_body(b) {
+        assert_eq!(x.encode_body(), b);
+    }
     // Sections décompressées : chaque décodeur sur les mêmes octets.
     let _ = sections::buildings(b);
     let _ = sections::network(b);

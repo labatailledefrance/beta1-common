@@ -38,7 +38,8 @@ pub const QUANT: f64 = 16.0;
 /// Taille décompressée maximale d'une section : borne contre les bombes zstd.
 pub const MAX_SECTION: usize = 32 << 20;
 const HASH: usize = 32;
-const HEADER: usize = 26;
+/// Taille de la partie fixe de l'en-tête (nombre de sections compris) : ce que lit [`decode_header`].
+pub const HEADER: usize = 26;
 
 /// Sections d'une tile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -198,6 +199,26 @@ pub fn encode(h: &Header, sections: &[Section]) -> Vec<u8> {
     let h = blake3::hash(&out);
     out.extend_from_slice(h.as_bytes());
     out
+}
+
+/// Lit le seul en-tête d'une tile (ses [`HEADER`] premiers octets suffisent),
+/// sans vérifier l'empreinte : pour parcourir les tiles d'un paquet sans les lire.
+pub fn decode_header(b: &[u8]) -> Result<Header> {
+    let b = b.get(..HEADER).ok_or(Invalid)?;
+    if &b[..4] != MAGIC || b[4] != VERSION {
+        return Err(Invalid);
+    }
+    let mut r = crate::codec::Reader::new(&b[5..]);
+    let h = Header {
+        zone: r.u8()?,
+        ix: r.i32()?,
+        iy: r.i32()?,
+        flags: r.u8()?,
+        built_share: r.u16()?,
+        inhabitants: r.u32()?,
+        buildings: r.u32()?,
+    };
+    Ok(h)
 }
 
 /// Une tile lue, sections encore compressées.

@@ -10,6 +10,7 @@ Code partagé de la beta 1 de **La Bataille de France** : le serveur ([beta1-ser
 | `rng` | Aléatoire déterministe, indépendant de l'ordre et des threads |
 | `tile` | Format des tiles : en-tête, sections compressées (zstd en Rust pur, pour le wasm), empreinte BLAKE3, paquets de 16 × 16 ; relief (base 2 m + complément 1 m) ; décodeur de chaque section ; codes des énumérations de la BD TOPO |
 | `graph` | Graphe routier national (`graphe.bin`) : nœuds, tronçons recousus, attributs, ouvrages et charges, géométrie, **ordre CCH** |
+| `index` | Index national des tiles (`index.bin`) : drapeaux, part de bâti et habitants de chaque tile de la publication ; lu par le serveur (population des tiles inertes) et par le client (la France vue de loin) |
 
 ## Fingerprint du protocole
 
@@ -18,6 +19,10 @@ Code partagé de la beta 1 de **La Bataille de France** : le serveur ([beta1-ser
 ## Format des tiles
 
 Produit par [beta1-datachain](https://github.com/labatailledefrance/beta1-datachain), lu par le serveur et le client. Le décodage ne panique jamais et refuse toute section qui ne se lit pas jusqu'au dernier octet ; la taille décompressée est bornée (pas de bombe zstd). Vérifié sur les 18 323 tiles du Finistère ; fuzzé avec le protocole.
+
+## Index national
+
+Produit une fois par publication par la chaîne, qui lit l'en-tête de chaque tile ; lu par le serveur au démarrage et téléchargé une fois par le client (immuable, gardé en cache). Les en-têtes lus un par un demandent 5 à 6 min à froid sur srv ; l'index de la France tient en un fichier d'environ 1 Mo. Tiles triées, en colonnes de plages consécutives ; drapeaux, part de bâti et habitants en colonnes ; corps zstd et empreinte BLAKE3. Une seule écriture possible, fuzzée comme le protocole. Hors du fingerprint : ce n'est pas un message.
 
 ## Graphe routier
 
