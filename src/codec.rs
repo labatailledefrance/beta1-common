@@ -158,6 +158,11 @@ impl<'a> Reader<'a> {
             }
             v |= u64::from(b & 0x7F) << shift;
             if b & 0x80 == 0 {
+                // Forme minimale seulement : un dernier octet nul ne s'écrit jamais
+                // (sinon deux écritures pour une même valeur).
+                if b == 0 && shift > 0 {
+                    return Err(Invalid);
+                }
                 return Ok(v);
             }
             shift += 7;

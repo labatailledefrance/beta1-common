@@ -9,7 +9,9 @@
 //! Ensuite, le client dit ce qu'il regarde ([`ClientMessage::Vue`]) ; le
 //! serveur lui envoie, à 10 Hz, l'état ([`ServerMessage::State`]) et les
 //! zombies proches de sa vue ([`ServerMessage::Zombies`]), les plus proches
-//! d'abord, dans un budget fixe (60 ko/s par client, H-05).
+//! d'abord, dans un budget fixe (60 ko/s par client, H-05). Toutes les 2 s,
+//! la densité des zombies par case de 50 m autour de la vue
+//! ([`ServerMessage::Densites`]) : la foule au-delà des zombies individuels.
 
 use crate::codec::{Invalid, Reader, Result, Writer};
 use crate::geo::{Pos, TileId};
@@ -24,6 +26,50 @@ pub const MAX_CLIENT_MESSAGE: usize = 4096;
 pub const RAYON_MAX: f32 = 1000.0;
 /// Zombies au plus par message [`ServerMessage::Zombies`] : 6 ko à 5 octets chacun.
 pub const BUDGET_ZOMBIES: usize = 1200;
+
+/// Côté d'une case de densité (m).
+pub const CASE_DENSITE: f32 = 50.0;
+/// Cases de densité par côté de tile (20 × 20 = 400).
+pub const CASES_DENSITE: usize = 20;
+/// Octets au plus d'un message [`ServerMessage::Densites`] (12 ko toutes les 2 s : 6 ko/s).
+pub const BUDGET_DENSITES: usize = 12_000;
+
+/// Niveau de densité d'un compte : 8 niveaux par doublement, 0 pour aucun (P-26).
+pub fn niveau(n: u32) -> u8 {
+    if n == 0 { 0 } else { ((1.0 + n as f32).log2() * 8.0).round().clamp(1.0, 255.0) as u8 }
+}
+
+/// Compte approché d'un niveau.
+pub fn de_niveau(v: u8) -> f32 {
+    if v == 0 { 0.0 } else { (f32::from(v) / 8.0).exp2() - 1.0 }
+}
+
+/// Densité d'une tile : niveau de chaque case de 50 m, indice `j * 20 + i`, j = 0 au sud.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DensiteTile {
+    /// Tile.
+    pub tile: TileId,
+    /// [`CASES_DENSITE`]² niveaux.
+    pub niveaux: Vec<u8>,
+}
+
+impl DensiteTile {
+    /// Majorant de la taille encodée (octets) : tile, nombre de cases non vides,
+    /// puis au plus 3 octets par case (écart en varint de 1 ou 2 octets, niveau).
+    pub fn taille(&self) -> usize {
+        let n = self.niveaux.iter().filter(|v| **v != 0).count();
+        8 + varint_len(n as u64) + 3 * n
+    }
+}
+
+fn varint_len(mut v: u64) -> usize {
+    let mut n = 1;
+    while v >= 0x80 {
+        v >>= 7;
+        n += 1;
+    }
+    n
+}
 
 /// Zombie vu : position relative au centre de la tile d'ancrage, au 1/10 m,
 /// et cap au 1/256 de tour. 5 octets.
@@ -127,6 +173,13 @@ pub enum ServerMessage {
         /// Au plus [`BUDGET_ZOMBIES`].
         zombies: Vec<ZombieVu>,
     },
+    /// Densité des zombies autour de la vue, les tiles les plus proches d'abord.
+    Densites {
+        /// Tick de ces comptes.
+        tick: u64,
+        /// Tiles ; une tile absente n'a pas été envoyée (hors portée ou hors budget).
+        tiles: Vec<DensiteTile>,
+    },
 }
 
 const C_HELLO: u8 = 1;
@@ -135,6 +188,7 @@ const S_WELCOME: u8 = 1;
 const S_REJECTED: u8 = 2;
 const S_STATE: u8 = 3;
 const S_ZOMBIES: u8 = 4;
+const S_DENSITES: u8 = 5;
 
 impl ClientMessage {
     /// Vue de rayon ramené dans [0, [`RAYON_MAX`]] (un rayon hors bornes est refusé au décodage).
@@ -213,6 +267,24 @@ impl ServerMessage {
                     w.u8(z.cap);
                 }
             }
+            ServerMessage::Densites { tick, tiles } => {
+                w.u8(S_DENSITES);
+                w.u64(*tick);
+                w.varint(tiles.len() as u64);
+                for t in tiles {
+                    w.tile(t.tile);
+                    let cases: Vec<(usize, u8)> =
+                        t.niveaux.iter().copied().enumerate().filter(|(_, v)| *v != 0).collect();
+                    w.varint(cases.len() as u64);
+                    // Écart à la case précédente, moins un : une seule écriture possible.
+                    let mut suivante = 0;
+                    for (k, v) in cases {
+                        w.varint((k - suivante) as u64);
+                        w.u8(v);
+                        suivante = k + 1;
+                    }
+                }
+            }
         }
         w.buf
     }
@@ -232,6 +304,29 @@ impl ServerMessage {
                 let zombies =
                     (0..n).map(|_| Ok(ZombieVu { d: [r.i16()?, r.i16()?], cap: r.u8()? })).collect::<Result<_>>()?;
                 ServerMessage::Zombies { tick, ancre, total, zombies }
+            }
+            S_DENSITES => {
+                let tick = r.u64()?;
+                let n = r.count()?;
+                let mut tiles = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let tile = r.tile()?;
+                    let cases = r.count()?;
+                    let mut niveaux = vec![0u8; CASES_DENSITE * CASES_DENSITE];
+                    let mut suivante = 0u64;
+                    for _ in 0..cases {
+                        let k = suivante.checked_add(r.varint()?).ok_or(Invalid)?;
+                        let v = r.u8()?;
+                        // Case hors de la tile, ou niveau nul (il ne s'écrit pas) : refusé.
+                        if k >= niveaux.len() as u64 || v == 0 {
+                            return Err(Invalid);
+                        }
+                        niveaux[k as usize] = v;
+                        suivante = k + 1;
+                    }
+                    tiles.push(DensiteTile { tile, niveaux });
+                }
+                ServerMessage::Densites { tick, tiles }
             }
             _ => return Err(Invalid),
         };
