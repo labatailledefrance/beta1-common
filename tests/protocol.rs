@@ -171,8 +171,11 @@ fn densites_aller_retour_et_taille() {
     let b = d.encode();
     assert_eq!(ServerMessage::decode(&b), Ok(d.clone()));
     let ServerMessage::Densites { tiles, .. } = &d else { panic!() };
-    let majorant: usize = 1 + 8 + 1 + tiles.iter().map(|t| t.taille()).sum::<usize>();
-    assert!(b.len() <= majorant, "{} > {majorant}", b.len());
+    // Tailles exactes : type, tick, nombre de tiles, puis chaque tile.
+    assert_eq!(b.len(), 1 + 8 + 1 + tiles.iter().map(|t| t.taille()).sum::<usize>());
+    // La tile pleine part en encodage plein (409 octets), les autres en creux.
+    assert!(tiles[1].plein() && !tiles[0].plein() && !tiles[2].plein());
+    assert_eq!(tiles[1].taille(), 8 + 1 + 400);
     for n in 0..b.len() {
         assert!(ServerMessage::decode(&b[..n]).is_err());
     }
@@ -188,6 +191,7 @@ fn densites_non_canoniques_refusees() {
         w.u64(1);
         w.varint(1);
         w.tile(BREST.tile);
+        w.u8(0);
         w.varint(1);
         w.varint(ecart);
         w.u8(niveau);
@@ -215,4 +219,28 @@ fn varint_non_minimal_refuse() {
     assert!(Reader::new(&[0xFF, 0x00]).varint().is_err());
     assert_eq!(Reader::new(&[0xFF, 0x01]).varint(), Ok(255));
     assert_eq!(Reader::new(&[0x00]).varint(), Ok(0));
+}
+
+#[test]
+fn densites_mode_non_canonique_refuse() {
+    use beta1_common::codec::Writer;
+    // Une tile presque vide envoyée en mode plein : l'encodeur aurait pris le creux.
+    let mut w = Writer::default();
+    w.u8(5);
+    w.u64(1);
+    w.varint(1);
+    w.tile(BREST.tile);
+    w.u8(1);
+    let mut cases = [0u8; 400];
+    cases[7] = 9;
+    w.bytes(&cases);
+    assert!(ServerMessage::decode(&w.buf).is_err());
+    // Mode inconnu.
+    let mut w = Writer::default();
+    w.u8(5);
+    w.u64(1);
+    w.varint(1);
+    w.tile(BREST.tile);
+    w.u8(2);
+    assert!(ServerMessage::decode(&w.buf).is_err());
 }
