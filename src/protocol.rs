@@ -53,12 +53,35 @@ pub struct DensiteTile {
     pub niveaux: Vec<u8>,
 }
 
+/// Mode d'encodage d'une tile de densité : creux (cases non vides seulement).
+const MODE_CREUX: u8 = 0;
+/// Mode plein : les 400 niveaux, un octet chacun.
+const MODE_PLEIN: u8 = 1;
+
 impl DensiteTile {
-    /// Majorant de la taille encodée (octets) : tile, nombre de cases non vides,
-    /// puis au plus 3 octets par case (écart en varint de 1 ou 2 octets, niveau).
+    /// Octets de l'encodage creux : nombre de cases non vides, puis (écart, niveau) par case.
+    fn taille_creuse(&self) -> usize {
+        let mut n = 0;
+        let mut octets = 0;
+        let mut suivante = 0;
+        for (k, v) in self.niveaux.iter().enumerate() {
+            if *v != 0 {
+                n += 1;
+                octets += varint_len((k - suivante) as u64) + 1;
+                suivante = k + 1;
+            }
+        }
+        varint_len(n) + octets
+    }
+
+    /// L'encodage plein est le plus court (en ville) ; à égalité, le creux.
+    pub fn plein(&self) -> bool {
+        self.taille_creuse() > CASES_DENSITE * CASES_DENSITE
+    }
+
+    /// Taille encodée exacte (octets) : tile, mode, puis le plus court des deux encodages.
     pub fn taille(&self) -> usize {
-        let n = self.niveaux.iter().filter(|v| **v != 0).count();
-        8 + varint_len(n as u64) + 3 * n
+        8 + 1 + if self.plein() { CASES_DENSITE * CASES_DENSITE } else { self.taille_creuse() }
     }
 }
 
@@ -273,6 +296,14 @@ impl ServerMessage {
                 w.varint(tiles.len() as u64);
                 for t in tiles {
                     w.tile(t.tile);
+                    if t.plein() {
+                        w.u8(MODE_PLEIN);
+                        for k in 0..CASES_DENSITE * CASES_DENSITE {
+                            w.u8(t.niveaux.get(k).copied().unwrap_or(0));
+                        }
+                        continue;
+                    }
+                    w.u8(MODE_CREUX);
                     let cases: Vec<(usize, u8)> =
                         t.niveaux.iter().copied().enumerate().filter(|(_, v)| *v != 0).collect();
                     w.varint(cases.len() as u64);
@@ -311,20 +342,33 @@ impl ServerMessage {
                 let mut tiles = Vec::with_capacity(n);
                 for _ in 0..n {
                     let tile = r.tile()?;
-                    let cases = r.count()?;
-                    let mut niveaux = vec![0u8; CASES_DENSITE * CASES_DENSITE];
-                    let mut suivante = 0u64;
-                    for _ in 0..cases {
-                        let k = suivante.checked_add(r.varint()?).ok_or(Invalid)?;
-                        let v = r.u8()?;
-                        // Case hors de la tile, ou niveau nul (il ne s'écrit pas) : refusé.
-                        if k >= niveaux.len() as u64 || v == 0 {
-                            return Err(Invalid);
+                    let mode = r.u8()?;
+                    let niveaux = match mode {
+                        MODE_PLEIN => r.slice(CASES_DENSITE * CASES_DENSITE)?.to_vec(),
+                        MODE_CREUX => {
+                            let cases = r.count()?;
+                            let mut niveaux = vec![0u8; CASES_DENSITE * CASES_DENSITE];
+                            let mut suivante = 0u64;
+                            for _ in 0..cases {
+                                let k = suivante.checked_add(r.varint()?).ok_or(Invalid)?;
+                                let v = r.u8()?;
+                                // Case hors de la tile, ou niveau nul (il ne s'écrit pas) : refusé.
+                                if k >= niveaux.len() as u64 || v == 0 {
+                                    return Err(Invalid);
+                                }
+                                niveaux[k as usize] = v;
+                                suivante = k + 1;
+                            }
+                            niveaux
                         }
-                        niveaux[k as usize] = v;
-                        suivante = k + 1;
+                        _ => return Err(Invalid),
+                    };
+                    let d = DensiteTile { tile, niveaux };
+                    // Le mode doit être celui que l'encodeur aurait choisi : une seule écriture.
+                    if d.plein() != (mode == MODE_PLEIN) {
+                        return Err(Invalid);
                     }
-                    tiles.push(DensiteTile { tile, niveaux });
+                    tiles.push(d);
                 }
                 ServerMessage::Densites { tick, tiles }
             }
