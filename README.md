@@ -6,7 +6,7 @@ Code partagé de la beta 1 de **La Bataille de France** : le serveur ([beta1-ser
 |---|---|
 | `geo` | Positions : tile de 1 km (zone de projection, ix, iy) + position locale f32 centrée |
 | `codec` | `Reader` et `Writer` binaires ; le `Reader` ne panique jamais |
-| `protocol` | Messages client ↔ serveur : handshake (caméra de départ), vue du client, état, zombies proches (1/10 m, les plus proches d'abord, 1 200 au plus : 6 ko par état, 60 ko/s à 10 Hz), densité par case de 50 m autour de la vue (12 ko toutes les 2 s ; par tile, encodage plein en ville ou creux ailleurs, le plus court). Décodage strict : chaque message n'a qu'une écriture (varints minimaux, bornes) |
+| `protocol` | Messages client ↔ serveur : handshake (caméra de départ), vue du client, état, zombies proches par navigation à l'estime (retraits, poses au 1/10 m, corrections des estimes trop fausses ; 6 ko par état, 60 ko/s à 10 Hz), densité par case de 50 m autour de la vue (12 ko toutes les 2 s ; par tile, encodage plein en ville ou creux ailleurs, le plus court). Décodage strict : chaque message n'a qu'une écriture (varints minimaux, bornes) |
 | `rng` | Aléatoire déterministe, indépendant de l'ordre et des threads |
 | `tile` | Format des tiles : en-tête, sections compressées (zstd en Rust pur, pour le wasm), empreinte BLAKE3, paquets de 16 × 16 ; relief (base 2 m + complément 1 m) ; décodeur de chaque section ; codes des énumérations de la BD TOPO |
 | `graph` | Graphe routier national (`graphe.bin`) : nœuds, tronçons recousus, attributs, ouvrages et charges, géométrie, **ordre CCH** |

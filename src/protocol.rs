@@ -24,8 +24,10 @@ pub const TICKS_PER_SECOND: u32 = 20;
 pub const MAX_CLIENT_MESSAGE: usize = 4096;
 /// Rayon maximal de la vue des zombies individuels (m) ; au-delà, carte de densité (F-01).
 pub const RAYON_MAX: f32 = 1000.0;
-/// Zombies au plus par message [`ServerMessage::Zombies`] : 6 ko à 5 octets chacun.
-pub const BUDGET_ZOMBIES: usize = 1200;
+/// Octets visés par message [`ServerMessage::Zombies`] : 6 ko par état, 60 ko/s à 10 Hz.
+pub const BUDGET_ZOMBIES: usize = 6000;
+/// Durée maximale d'une estime (ticks) : au-delà, le zombie est supposé arrêté.
+pub const ESTIME_MAX: f32 = 2.0 * TICKS_PER_SECOND as f32;
 
 /// Côté d'une case de densité (m).
 pub const CASE_DENSITE: f32 = 50.0;
@@ -94,34 +96,101 @@ fn varint_len(mut v: u64) -> usize {
     n
 }
 
-/// Zombie vu : position relative au centre de la tile d'ancrage, au 1/10 m,
-/// et cap au 1/256 de tour. 5 octets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ZombieVu {
-    /// Écart au centre de la tile d'ancrage (dm).
-    pub d: [i16; 2],
-    /// Cap, en 1/256 de tour.
-    pub cap: u8,
+/// Cap en 1/256 de tour.
+pub fn cap_octet(radians: f32) -> u8 {
+    let tour = radians.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU;
+    (tour * 256.0).round() as u32 as u8
 }
 
-impl ZombieVu {
-    /// Zombie en `pos`, de cap `cap` (radians), vu depuis `ancre` ; `None` au-delà de 3,2 km.
-    pub fn new(ancre: TileId, pos: Pos, cap: f32) -> Option<ZombieVu> {
+/// Vitesse (1/10 m/s sur 6 bits, 6,3 m/s au plus) et état (2 bits) dans un octet.
+pub fn vitesse_etat(vitesse: f32, etat: u8) -> u8 {
+    (((vitesse * 10.0).round().clamp(0.0, 63.0) as u8) << 2) | (etat & 3)
+}
+
+/// Estime d'un zombie (navigation à l'estime) : le serveur et le client
+/// calculent la même position à partir de la dernière connue, du cap et de la
+/// vitesse ; le serveur n'envoie que ce qui s'en écarte trop.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Estime {
+    /// Position au tick `tick`.
+    pub pos: Pos,
+    /// Tick de cette position.
+    pub tick: u64,
+    /// Cap, en 1/256 de tour.
+    pub cap: u8,
+    /// Vitesse et état ([`vitesse_etat`]).
+    pub ve: u8,
+}
+
+impl Estime {
+    /// Vitesse (m/s).
+    pub fn vitesse(&self) -> f32 {
+        f32::from(self.ve >> 2) / 10.0
+    }
+    /// État (0 errance ; les autres viendront avec la perception).
+    pub fn etat(&self) -> u8 {
+        self.ve & 3
+    }
+    /// Position estimée `dt` ticks après la sienne (bornée à [`ESTIME_MAX`]).
+    pub fn apres(&self, dt: f32) -> Pos {
+        let dt = dt.clamp(0.0, ESTIME_MAX) / TICKS_PER_SECOND as f32;
+        let a = f32::from(self.cap) / 256.0 * std::f32::consts::TAU;
+        let d = self.vitesse() * dt;
+        self.pos.offset([a.cos() * d, a.sin() * d])
+    }
+    /// Position estimée au tick `tick`.
+    pub fn a(&self, tick: u64) -> Pos {
+        self.apres(tick.saturating_sub(self.tick) as f32)
+    }
+}
+
+/// Nouveau zombie suivi (ou recalé de loin) : numéro court, position au 1/10 m
+/// depuis le centre de la tile d'ancrage, cap, vitesse et état.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pose {
+    /// Numéro court, propre au client.
+    pub n: u16,
+    /// Écart au centre de la tile d'ancrage (dm).
+    pub d: [i16; 2],
+    /// Cap.
+    pub cap: u8,
+    /// Vitesse et état.
+    pub ve: u8,
+}
+
+impl Pose {
+    /// Pose de `pos` depuis `ancre` ; `None` au-delà de 3,2 km.
+    pub fn new(n: u16, ancre: TileId, pos: Pos, cap: u8, ve: u8) -> Option<Pose> {
         let v = Pos { tile: ancre, local: [0.0, 0.0] }.vector_to(pos);
         let q = |x: f32| {
             let d = (x * 10.0).round();
             (d.abs() <= i16::MAX as f32).then_some(d as i16)
         };
-        let tour = cap.rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU;
-        Some(ZombieVu { d: [q(v[0])?, q(v[1])?], cap: (tour * 256.0).round() as u32 as u8 })
+        Some(Pose { n, d: [q(v[0])?, q(v[1])?], cap, ve })
     }
-    /// Position, vue depuis `ancre`.
+    /// Position telle que le client la lit.
     pub fn pos(&self, ancre: TileId) -> Pos {
-        Pos { tile: ancre, local: [self.d[0] as f32 / 10.0, self.d[1] as f32 / 10.0] }.normalized()
+        Pos { tile: ancre, local: [f32::from(self.d[0]) / 10.0, f32::from(self.d[1]) / 10.0] }.normalized()
     }
-    /// Cap (radians).
-    pub fn cap(&self) -> f32 {
-        self.cap as f32 / 256.0 * std::f32::consts::TAU
+}
+
+/// Correction d'une estime : écart au 1/10 m (12,7 m au plus), nouveaux cap et vitesse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Correction {
+    /// Numéro court.
+    pub n: u16,
+    /// Écart à la position estimée (dm).
+    pub d: [i8; 2],
+    /// Cap.
+    pub cap: u8,
+    /// Vitesse et état.
+    pub ve: u8,
+}
+
+impl Correction {
+    /// Position corrigée, depuis la position estimée.
+    pub fn pos(&self, estimee: Pos) -> Pos {
+        estimee.offset([f32::from(self.d[0]) / 10.0, f32::from(self.d[1]) / 10.0])
     }
 }
 
@@ -185,16 +254,21 @@ pub enum ServerMessage {
         /// Tick de cet état.
         tick: u64,
     },
-    /// Zombies proches de la vue du client, les plus proches d'abord.
+    /// Zombies proches de la vue : ce qui change dans les estimes du client.
+    /// Le client applique les retraits, puis les poses, puis les corrections.
     Zombies {
         /// Tick de ces positions.
         tick: u64,
-        /// Tile d'ancrage des positions.
+        /// Tile d'ancrage des poses.
         ancre: TileId,
-        /// Zombies dans le rayon de la vue, y compris ceux hors budget.
+        /// Zombies dans le rayon de la vue, suivis ou non.
         total: u32,
-        /// Au plus [`BUDGET_ZOMBIES`].
-        zombies: Vec<ZombieVu>,
+        /// Numéros qui ne sont plus suivis, croissants.
+        retraits: Vec<u16>,
+        /// Nouveaux zombies suivis, numéros croissants.
+        poses: Vec<Pose>,
+        /// Estimes corrigées, numéros croissants.
+        corrections: Vec<Correction>,
     },
     /// Densité des zombies autour de la vue, les tiles les plus proches d'abord.
     Densites {
@@ -278,17 +352,24 @@ impl ServerMessage {
                 w.u8(S_STATE);
                 w.u64(*tick);
             }
-            ServerMessage::Zombies { tick, ancre, total, zombies } => {
+            ServerMessage::Zombies { tick, ancre, total, retraits, poses, corrections } => {
                 w.u8(S_ZOMBIES);
                 w.u64(*tick);
                 w.tile(*ancre);
                 w.u32(*total);
-                w.varint(zombies.len() as u64);
-                for z in zombies {
-                    w.i16(z.d[0]);
-                    w.i16(z.d[1]);
-                    w.u8(z.cap);
-                }
+                ecrire_numeros(&mut w, retraits.iter().map(|n| (*n, ())), |_, _| {});
+                ecrire_numeros(&mut w, poses.iter().map(|p| (p.n, p)), |w, p| {
+                    w.i16(p.d[0]);
+                    w.i16(p.d[1]);
+                    w.u8(p.cap);
+                    w.u8(p.ve);
+                });
+                ecrire_numeros(&mut w, corrections.iter().map(|c| (c.n, c)), |w, c| {
+                    w.u8(c.d[0] as u8);
+                    w.u8(c.d[1] as u8);
+                    w.u8(c.cap);
+                    w.u8(c.ve);
+                });
             }
             ServerMessage::Densites { tick, tiles } => {
                 w.u8(S_DENSITES);
@@ -328,13 +409,13 @@ impl ServerMessage {
             S_STATE => ServerMessage::State { tick: r.u64()? },
             S_ZOMBIES => {
                 let (tick, ancre, total) = (r.u64()?, r.tile()?, r.u32()?);
-                let n = r.count()?;
-                if n > BUDGET_ZOMBIES {
-                    return Err(Invalid);
-                }
-                let zombies =
-                    (0..n).map(|_| Ok(ZombieVu { d: [r.i16()?, r.i16()?], cap: r.u8()? })).collect::<Result<_>>()?;
-                ServerMessage::Zombies { tick, ancre, total, zombies }
+                let retraits = lire_numeros(&mut r, |_, n| Ok(n))?;
+                let poses =
+                    lire_numeros(&mut r, |r, n| Ok(Pose { n, d: [r.i16()?, r.i16()?], cap: r.u8()?, ve: r.u8()? }))?;
+                let corrections = lire_numeros(&mut r, |r, n| {
+                    Ok(Correction { n, d: [r.u8()? as i8, r.u8()? as i8], cap: r.u8()?, ve: r.u8()? })
+                })?;
+                ServerMessage::Zombies { tick, ancre, total, retraits, poses, corrections }
             }
             S_DENSITES => {
                 let tick = r.u64()?;
@@ -377,6 +458,36 @@ impl ServerMessage {
         r.finish()?;
         Ok(m)
     }
+}
+
+/// Liste à numéros croissants : nombre, puis pour chaque élément l'écart au
+/// numéro suivant le précédent (une seule écriture possible), puis la charge.
+/// Les numéros doivent être strictement croissants (le serveur les trie).
+fn ecrire_numeros<T>(
+    w: &mut Writer,
+    elements: impl ExactSizeIterator<Item = (u16, T)>,
+    charge: impl Fn(&mut Writer, T),
+) {
+    w.varint(elements.len() as u64);
+    let mut suivant = 0u32;
+    for (n, e) in elements {
+        w.varint(u64::from(u32::from(n).saturating_sub(suivant)));
+        charge(w, e);
+        suivant = u32::from(n) + 1;
+    }
+}
+
+fn lire_numeros<T>(r: &mut Reader<'_>, mut charge: impl FnMut(&mut Reader<'_>, u16) -> Result<T>) -> Result<Vec<T>> {
+    let k = r.count()?;
+    let mut v = Vec::with_capacity(k);
+    let mut suivant = 0u64;
+    for _ in 0..k {
+        let n = suivant.checked_add(r.varint()?).ok_or(Invalid)?;
+        let n = u16::try_from(n).map_err(|_| Invalid)?;
+        v.push(charge(r, n)?);
+        suivant = u64::from(n) + 1;
+    }
+    Ok(v)
 }
 
 /// Réponse du serveur au premier message d'un client ; `camera` : où le placer au départ.

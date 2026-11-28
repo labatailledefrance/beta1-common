@@ -3,15 +3,25 @@
 use beta1_common::codec::{Reader, Writer};
 use beta1_common::geo::{Pos, TileId};
 use beta1_common::protocol::{
-    BUDGET_ZOMBIES, ClientMessage, FINGERPRINT, RAYON_MAX, RejectReason, ServerMessage, ZombieVu, handshake,
+    ClientMessage, Correction, Estime, FINGERPRINT, Pose, RAYON_MAX, RejectReason, ServerMessage, cap_octet, handshake,
+    vitesse_etat,
 };
 
 /// Brest, position exacte au 1/64 m.
 const BREST: Pos = Pos { tile: TileId { ix: 146, iy: 6839 }, local: [12.5, -250.25] };
 
 fn zombies(n: usize) -> ServerMessage {
-    let zombies = (0..n).map(|k| ZombieVu { d: [k as i16 * 7 - 3000, -(k as i16)], cap: k as u8 }).collect();
-    ServerMessage::Zombies { tick: 99, ancre: BREST.tile, total: n as u32 + 5, zombies }
+    let n16 = |k: usize| (k * 3) as u16;
+    ServerMessage::Zombies {
+        tick: 99,
+        ancre: BREST.tile,
+        total: n as u32 + 5,
+        retraits: (0..n).map(|k| n16(k) + 1).collect(),
+        poses: (0..n).map(|k| Pose { n: n16(k), d: [k as i16 * 7 - 3000, -(k as i16)], cap: k as u8, ve: 9 }).collect(),
+        corrections: (0..n)
+            .map(|k| Correction { n: n16(k) + 2, d: [(k % 100) as i8, -((k % 100) as i8)], cap: 3, ve: k as u8 })
+            .collect(),
+    }
 }
 
 #[test]
@@ -24,7 +34,15 @@ fn aller_retour_des_messages() {
         ServerMessage::Rejected { reason: RejectReason::Version },
         ServerMessage::State { tick: u64::MAX },
         zombies(0),
-        zombies(BUDGET_ZOMBIES),
+        zombies(800),
+        ServerMessage::Zombies {
+            tick: 1,
+            ancre: BREST.tile,
+            total: 1,
+            retraits: vec![u16::MAX],
+            poses: vec![],
+            corrections: vec![],
+        },
     ] {
         assert_eq!(ServerMessage::decode(&s.encode()), Ok(s));
     }
@@ -65,21 +83,41 @@ fn position_hors_de_la_tile_refusee() {
 }
 
 #[test]
-fn zombies_au_dela_du_budget_refuses() {
-    assert!(ServerMessage::decode(&zombies(BUDGET_ZOMBIES + 1).encode()).is_err());
-    // 5 octets par zombie, en-tête compris : le budget tient en 6 ko.
-    assert!(zombies(BUDGET_ZOMBIES).encode().len() <= 6_030);
+fn numeros_canoniques() {
+    use beta1_common::codec::Writer;
+    // Numéro au-delà de u16 : refusé.
+    let mut w = Writer::default();
+    w.u8(4);
+    w.u64(1);
+    w.tile(BREST.tile);
+    w.u32(0);
+    w.varint(1);
+    w.varint(70_000);
+    w.varint(0);
+    w.varint(0);
+    assert!(ServerMessage::decode(&w.buf).is_err());
+    // 800 poses, retraits et corrections : environ 7 + 1 + 5 octets chacun, numéros compris.
+    let b = zombies(800).encode();
+    assert!(b.len() < 800 * 15, "{} octets", b.len());
 }
 
 #[test]
-fn zombie_vu_au_dixieme_de_metre() {
+fn estime_et_pose() {
+    // Vers l'est à 2 m/s : 2 m par seconde, 4 m au plus (2 s d'estime).
+    let e = Estime { pos: BREST, tick: 100, cap: cap_octet(0.0), ve: vitesse_etat(2.0, 0) };
+    assert_eq!((e.vitesse(), e.etat()), (2.0, 0));
+    assert!(e.a(120).distance(BREST.offset([2.0, 0.0])) < 1e-3);
+    assert!(e.a(1000).distance(BREST.offset([4.0, 0.0])) < 1e-3);
+    assert_eq!(e.a(50), BREST, "avant son tick : la position connue");
+    assert_eq!(cap_octet(-std::f32::consts::FRAC_PI_2), 192);
+    assert_eq!(vitesse_etat(99.0, 7), 63 << 2 | 3);
+    // Pose au 1/10 m ; au-delà de 3,2 km, pas représentable.
     let p = BREST.offset([-731.23, 412.06]);
-    let z = ZombieVu::new(BREST.tile, p, -std::f32::consts::FRAC_PI_2).unwrap();
-    assert!(z.pos(BREST.tile).distance(p) < 0.08, "{:?}", z.pos(BREST.tile));
-    assert_eq!(z.cap, 192);
-    assert!((z.cap() - 3.0 * std::f32::consts::FRAC_PI_2).abs() < 1e-6);
-    // Au-delà de 3,2 km de l'ancre : pas représentable.
-    assert_eq!(ZombieVu::new(BREST.tile, BREST.offset([4000.0, 0.0]), 0.0), None);
+    let pose = Pose::new(4, BREST.tile, p, 0, 0).unwrap();
+    assert!(pose.pos(BREST.tile).distance(p) < 0.08);
+    assert_eq!(Pose::new(4, BREST.tile, BREST.offset([4000.0, 0.0]), 0, 0), None);
+    let c = Correction { n: 4, d: [-127, 15], cap: 0, ve: 0 };
+    assert!(c.pos(BREST).distance(BREST.offset([-12.7, 1.5])) < 1e-3);
 }
 
 #[test]
