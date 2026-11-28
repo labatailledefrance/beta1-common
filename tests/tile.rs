@@ -97,6 +97,9 @@ fn tile_aller_retour_et_falsification() {
         Header { zone: 0, ix: 146, iy: 6838, flags: 1 | 4 | 2 << 4, built_share: 1234, inhabitants: 42, buildings: 1 };
     let t = tile::encode(&h, &[section(SectionId::Buildings, &bati), section(SectionId::Occupation, &occ)]);
 
+    // En-tête seul : ses premiers octets suffisent.
+    assert_eq!(tile::decode_header(&t[..tile::HEADER]).unwrap(), h);
+    assert!(tile::decode_header(&t[..tile::HEADER - 1]).is_err());
     let l = tile::decode(&t, true).unwrap();
     assert_eq!(l.header, h);
     assert_eq!(l.header.tile().map(|t| (t.ix, t.iy)), Some((146, 6838)));
