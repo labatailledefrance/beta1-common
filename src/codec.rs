@@ -201,10 +201,18 @@ impl<'a> Reader<'a> {
     pub fn tile(&mut self) -> Result<TileId> {
         Ok(TileId { ix: self.i32()?, iy: self.i32()? })
     }
-    /// Position.
+    /// Position, telle que l'écrit [`Writer::pos`] : une position locale hors de
+    /// [-500, 500[ est refusée (elle se réencoderait autrement).
     pub fn pos(&mut self) -> Result<Pos> {
         let tile = self.tile()?;
-        let local = [f32::from(self.i16()?) / 64.0, f32::from(self.i16()?) / 64.0];
-        Ok(Pos { tile, local }.normalized())
+        let mut local = [0.0; 2];
+        for l in &mut local {
+            let v = self.i16()?;
+            if !(-32_000..=31_999).contains(&v) {
+                return Err(Invalid);
+            }
+            *l = f32::from(v) / 64.0;
+        }
+        Ok(Pos { tile, local })
     }
 }

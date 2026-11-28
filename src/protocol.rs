@@ -91,7 +91,7 @@ pub enum ClientMessage {
     Vue {
         /// Centre de la vue.
         centre: Pos,
-        /// Rayon (m), ramené dans [0, [`RAYON_MAX`]].
+        /// Rayon (m), dans [0, [`RAYON_MAX`]] ; [`ClientMessage::vue`] le borne.
         rayon: f32,
     },
 }
@@ -137,6 +137,12 @@ const S_STATE: u8 = 3;
 const S_ZOMBIES: u8 = 4;
 
 impl ClientMessage {
+    /// Vue de rayon ramené dans [0, [`RAYON_MAX`]] (un rayon hors bornes est refusé au décodage).
+    pub fn vue(centre: Pos, rayon: f32) -> ClientMessage {
+        let rayon = if rayon.is_finite() { rayon.clamp(0.0, RAYON_MAX) } else { RAYON_MAX };
+        ClientMessage::Vue { centre: centre.normalized(), rayon }
+    }
+
     /// Encode le message.
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::default();
@@ -161,7 +167,15 @@ impl ClientMessage {
         let mut r = Reader::new(b);
         let m = match r.u8()? {
             C_HELLO => ClientMessage::Hello { fingerprint: r.bytes()? },
-            C_VUE => ClientMessage::Vue { centre: r.pos()?, rayon: r.f32()?.clamp(0.0, RAYON_MAX) },
+            C_VUE => {
+                let centre = r.pos()?;
+                let rayon = r.f32()?;
+                // Strict : une seule écriture possible pour chaque message.
+                if !(0.0..=RAYON_MAX).contains(&rayon) || rayon.to_bits() == (-0.0f32).to_bits() {
+                    return Err(Invalid);
+                }
+                ClientMessage::Vue { centre, rayon }
+            }
             _ => return Err(Invalid),
         };
         r.finish()?;

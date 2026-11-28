@@ -32,10 +32,36 @@ fn aller_retour_des_messages() {
 
 #[test]
 fn rayon_de_vue_borne() {
-    let c = ClientMessage::Vue { centre: BREST, rayon: 1e9 }.encode();
-    assert_eq!(ClientMessage::decode(&c), Ok(ClientMessage::Vue { centre: BREST, rayon: RAYON_MAX }));
-    let c = ClientMessage::Vue { centre: BREST, rayon: -3.0 }.encode();
-    assert_eq!(ClientMessage::decode(&c), Ok(ClientMessage::Vue { centre: BREST, rayon: 0.0 }));
+    // L'aide borne ; le décodeur refuse ce qui sort des bornes.
+    assert_eq!(ClientMessage::vue(BREST, 1e9), ClientMessage::Vue { centre: BREST, rayon: RAYON_MAX });
+    assert_eq!(ClientMessage::vue(BREST, -3.0), ClientMessage::Vue { centre: BREST, rayon: 0.0 });
+    assert_eq!(ClientMessage::vue(BREST, f32::NAN), ClientMessage::Vue { centre: BREST, rayon: RAYON_MAX });
+    for rayon in [1e9, -3.0, -0.0] {
+        assert!(ClientMessage::decode(&ClientMessage::Vue { centre: BREST, rayon }.encode()).is_err(), "{rayon}");
+    }
+}
+
+/// Trouvé par le fuzzing : une vue de rayon négatif ne doit pas se décoder (elle se réencodait autrement).
+#[test]
+fn regression_fuzzing_rayon_negatif() {
+    // Base64 : AgAAAAAAAAAAAAAAAAC12P0=
+    let b = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xB5, 0xD8, 0xFD];
+    assert!(ClientMessage::decode(&b).is_err());
+}
+
+#[test]
+fn position_hors_de_la_tile_refusee() {
+    // Locale de 31 999 / 64 = 499,98 m : acceptée ; 32 000 / 64 = 500 m : refusée.
+    let mut w = Writer::default();
+    w.tile(BREST.tile);
+    w.i16(31_999);
+    w.i16(-32_000);
+    assert!(Reader::new(&w.buf).pos().is_ok());
+    let mut w = Writer::default();
+    w.tile(BREST.tile);
+    w.i16(32_000);
+    w.i16(0);
+    assert!(Reader::new(&w.buf).pos().is_err());
 }
 
 #[test]
