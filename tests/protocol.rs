@@ -146,3 +146,73 @@ fn positions_au_soixante_quatrieme_de_metre() {
     assert_eq!(loin.tile, TileId { ix: 1, iy: -2 });
     assert!((-500.0..500.0).contains(&loin.local[0]) && (-500.0..500.0).contains(&loin.local[1]));
 }
+
+fn densites() -> ServerMessage {
+    use beta1_common::protocol::{CASES_DENSITE, DensiteTile};
+    let mut a = vec![0u8; CASES_DENSITE * CASES_DENSITE];
+    a[0] = 1;
+    a[17] = 200;
+    a[399] = 255;
+    let pleine = (0..CASES_DENSITE * CASES_DENSITE).map(|k| (k % 250 + 1) as u8).collect();
+    let vide = vec![0u8; CASES_DENSITE * CASES_DENSITE];
+    ServerMessage::Densites {
+        tick: 40,
+        tiles: vec![
+            DensiteTile { tile: BREST.tile, niveaux: a },
+            DensiteTile { tile: TileId { ix: 147, iy: 6839 }, niveaux: pleine },
+            DensiteTile { tile: TileId { ix: 148, iy: 6839 }, niveaux: vide },
+        ],
+    }
+}
+
+#[test]
+fn densites_aller_retour_et_taille() {
+    let d = densites();
+    let b = d.encode();
+    assert_eq!(ServerMessage::decode(&b), Ok(d.clone()));
+    let ServerMessage::Densites { tiles, .. } = &d else { panic!() };
+    let majorant: usize = 1 + 8 + 1 + tiles.iter().map(|t| t.taille()).sum::<usize>();
+    assert!(b.len() <= majorant, "{} > {majorant}", b.len());
+    for n in 0..b.len() {
+        assert!(ServerMessage::decode(&b[..n]).is_err());
+    }
+}
+
+#[test]
+fn densites_non_canoniques_refusees() {
+    use beta1_common::codec::Writer;
+    // Une case de niveau nul, ou au-delà de la 400e : refusées.
+    for (ecart, niveau) in [(3u64, 0u8), (400, 1)] {
+        let mut w = Writer::default();
+        w.u8(5);
+        w.u64(1);
+        w.varint(1);
+        w.tile(BREST.tile);
+        w.varint(1);
+        w.varint(ecart);
+        w.u8(niveau);
+        assert!(ServerMessage::decode(&w.buf).is_err(), "écart {ecart}, niveau {niveau}");
+    }
+}
+
+#[test]
+fn niveaux_de_densite() {
+    use beta1_common::protocol::{de_niveau, niveau};
+    assert_eq!(niveau(0), 0);
+    assert_eq!(niveau(1), 8);
+    assert_eq!(niveau(3), 16);
+    assert!(niveau(u32::MAX) == 255);
+    for n in [1u32, 10, 100, 1000] {
+        let e = de_niveau(niveau(n));
+        assert!((e - n as f32).abs() / n as f32 <= 0.05 + 1.0 / n as f32, "{n} → {e}");
+    }
+}
+
+#[test]
+fn varint_non_minimal_refuse() {
+    // 0 écrit sur deux octets : il ne se réencoderait pas pareil.
+    assert!(Reader::new(&[0x80, 0x00]).varint().is_err());
+    assert!(Reader::new(&[0xFF, 0x00]).varint().is_err());
+    assert_eq!(Reader::new(&[0xFF, 0x01]).varint(), Ok(255));
+    assert_eq!(Reader::new(&[0x00]).varint(), Ok(0));
+}
